@@ -277,7 +277,7 @@ class AgilentB1500(Instrument):
         smu_status = {
             1: 'A/D converter overflowed.',
             2: 'Oscillation of force or saturation current.',
-            4: 'Antoher unit reached its compliance setting.',
+            4: 'Another unit reached its compliance setting.',
             8: 'This unit reached its compliance setting.',
             16: 'Target value was not found within the search range.',
             32: 'Search measurement was automatically stopped.',
@@ -580,6 +580,10 @@ class AgilentB1500(Instrument):
             * Spot
             * Staircase Sweep
             * Sampling
+            * Linear Search
+            * Binary Search
+            * C Spot
+            * C-V Sweep
 
         :type mode: :class:`.MeasMode`
         :param args: SMU references
@@ -907,6 +911,31 @@ class AgilentB1500(Instrument):
     def query_meas_ranges(self):
         """Read measruement ranging status (32) for all SMUs."""
         return self.query_learn_header(32)
+
+######################################
+# CMU Setup
+######################################
+class CMU():
+    # TODO: is it reasonable to introduce a CMU class?
+    # TODO: implement CMU class
+    """ Provides specific methods for the Cs of the Agilent B1500 mainframe
+
+        :param parent: Instance of the B1500 mainframe class
+        :type parent: :class:`.AgilentB1500`
+        :param int channel: Channel number of the CMU
+        :param str name: Name of the CMU
+        """
+    def __init__(self, parent, channel, smu_type, name, **kwargs):
+        # to allow garbage collection for cyclic references
+        self._b1500 = weakref.proxy(parent)
+        channel = strict_discrete_set(channel, range(1, 11))
+        self.channel = channel
+        smu_type = strict_discrete_set(
+            smu_type,
+            ['MFCMU'])
+        self.voltage_ranging = SMUVoltageRanging(smu_type)
+        self.current_ranging = SMUCurrentRanging(smu_type)
+        self.name = name
 
 ######################################
 # SMU Setup
@@ -1630,6 +1659,10 @@ class MeasMode(CustomIntEnum):
     SPOT = 1  #:
     STAIRCASE_SWEEP = 2  #:
     SAMPLING = 10  #:
+    LINEAR_SEARCH = 14  #:
+    BINARY_SEARCH = 15  #:
+    C_SPOT = 17  #:
+    CV_SWEEP = 18  #:
 
 
 class MeasOpMode(CustomIntEnum):
