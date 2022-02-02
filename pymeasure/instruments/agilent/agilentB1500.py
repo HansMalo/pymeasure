@@ -597,7 +597,7 @@ class AgilentB1500(Instrument):
         self.write(cmd)
         self.check_errors()
 
-    # ADC Setup: AAD, AIT, AV, AZ
+    # ADC Setup: AAD, ACT, AIT, AV, AZ
 
     def query_adc_setup(self):
         """Read ADC settings (55, 56) from the intrument.
@@ -630,6 +630,30 @@ class AgilentB1500(Instrument):
                 command += (", %g" % N)
             else:
                 command += (", %d" % N)
+        self.write(command)
+        self.check_errors()
+
+    def adc_setup_CMU(self, mode, N=''):
+        """ Set up operation mode and parameters of ADC for each ADC type.
+        (``ACT``)
+        Defaults:
+
+            - MFCMU: Auto N=2, PLC N=1, Time N=0.000002(s)
+
+        :param mode: ADC mode
+        :type mode: :class:`.ADCMode`
+        :param N: additional parameter, check documentation, defaults to ``''``
+        :type N: str, optional
+        """
+
+        mode = ADCMode.get(mode)
+        if mode =='Auto':
+            if N>0:
+                N = strict_range(N, range(1, 1024))
+        if mode == 'PLC':
+            if N > 0:
+                N = strict_range(N, range(1, 101))
+        command = "ACT %d, %d" % (mode.value, N)
         self.write(command)
         self.check_errors()
 
@@ -916,8 +940,7 @@ class AgilentB1500(Instrument):
 # CMU Setup
 ######################################
 class CMU():
-    # TODO: is it reasonable to introduce a CMU class?
-    # TODO: implement CMU class
+    # TODO: implement CMU specific class commands
     """ Provides specific methods for the Cs of the Agilent B1500 mainframe
 
         :param parent: Instance of the B1500 mainframe class
@@ -933,9 +956,165 @@ class CMU():
         smu_type = strict_discrete_set(
             smu_type,
             ['MFCMU'])
-        self.voltage_ranging = SMUVoltageRanging(smu_type)
-        self.current_ranging = SMUCurrentRanging(smu_type)
+        self.impedance_ranging = CMUImpedanceRanging()
         self.name = name
+
+    def write(self, string):
+        """Wraps :meth:`.Instrument.write` method of B1500.
+        """
+        self._b1500.write(string)
+
+    def ask(self, string):
+        """Wraps :meth:`~.Instrument.ask` method of B1500.
+        """
+        return self._b1500.ask(string)
+
+    def query_learn(self, query_type, command):
+        """Wraps :meth:`~.AgilentB1500.query_learn` method of B1500.
+        """
+        response = self._b1500.query_learn(query_type)
+        # query_learn returns settings of all smus
+        # pick setting for this smu only
+        response = response[command + str(self.channel)]
+        return response
+
+    def check_errors(self):
+        """Wraps :meth:`~.AgilentB1500.check_errors` method of B1500.
+        """
+        return self._b1500.check_errors()
+    ##########################################
+
+    def _query_status_raw(self):
+        return self._b1500.query_learn(str(self.channel))
+
+    @property
+    def status(self):
+        """Query status of the CMU."""
+        return self._b1500.query_learn_header(str(self.channel))
+
+    def enable(self):
+        """ Enable Source/Measurement Channel (``CN``)"""
+        self.write("CN %d" % self.channel)
+
+    def disable(self):
+        """ Disable Source/Measurement Channel (``CL``)"""
+        self.write("CL %d" % self.channel)
+
+    @property
+    def SCUU_path(self):
+        """ Set input-output path for SCUU
+
+        :type: :class:`.SCUUMode`
+        """
+        response = self.query_learn(81, 'SSP')
+        response = int(response)
+        return SCUUMode(response)
+
+    @SCUU_path.setter
+    def SCUU_path(self,mode):
+        """ Set input-output path for SCUU"""
+        op_mode = SCUU_path.get(mode)
+        self.write("SSP %d, %d" % self.channel, op_mode)
+        self.check_errors()
+
+    @property
+    def phase_comp_mode(self, mode):
+        """ Set CMU phase compensation operation mode. (``ADJ``)
+
+        :type: :class:`.PhaseCompMode`
+        """
+        response = self.query_learn(90, 'ADJ')
+        response = int(response)
+        return PhaseCompMode(response)
+
+    @phase_comp_mode.setter
+    def phase_comp_mode(self, mode):
+        op_mode = PhaseCompMode.get(mode)
+        self.write("ADJ %d, %d" % (self.channel, op_mode.value))
+        self.check_errors()
+
+    def perf_phase_comp(self):
+        """ Perform phase compensation, if phase compensation mode was chosen to be 'manual' before.
+            Result is returned:
+            0 Pass
+            1 Fail
+            2 Aborted
+        """
+        self.write("ADJ? %d" % self.channel)
+
+    def osc_frequency(self, freq):
+        """ Set oscillation frequency of MFCMU. (``FC``)
+        """
+        val = freq
+        self.write("FC %d, %d" % (self.channel, val))
+        self.check_errors()
+
+    def ac_voltage(self, voltage):
+        """ Set ac-voltage of MFCMU. (``ACV``)
+        """
+        val = voltage
+        self.write("ACV %d, %d" % (self.channel, val))
+        self.check_errors()
+
+    def rst_CLCORR(self,mode):
+        """ This command disables the open/short/load correction function and clears the
+        frequency list for the correction data measurement. 'CLCORR'
+
+        mode : Command option. Integer expression. 1 or 2.
+        1: Just clears the frequency list.
+        2: Clears the frequency list and sets the default frequencies, 1 k, 2 k,
+        5 k, 10 k, 20 k, 50 k, 100 k, 200 k, 500 k, 1 M, 2 M, and 5 MHz.
+        """
+        val = mode
+        self.write("CLCORR %d, %d" % (self.channel, val))
+        self.check_errors()
+
+    def set_corr_val(self, corr, mode, primary, secondary):
+        """
+        This command disables the open/short/load correction function and defines the
+        calibration value or the reference value of the open/short/load standard. The
+        correction data will be invalid after this command. 'DCORR'
+
+        corr : Correction mode. Integer expression. 1, 2, or 3.
+        1: Open correction
+        2: Short correction
+        3: Load correction
+        mode : Measurement mode. Integer expression. 100 or 400.
+        100: Cp-G (for open correction)
+        400: Ls-Rs (for short or load correction)
+        primary : Primary reference value of the standard. Numeric expression.
+            Cp value for the open standard. in F.
+            Ls value for the short or load standard. in H.
+        secondary : Secondary reference value of the standard. Numeric expression.
+            G value for the open standard. in S.
+            Rs value for the short or load standard. in Ohm.
+        """
+        _corr=strict_discrete_set(corr, {1,2,3})
+        if _corr==1:
+            _mode=strict_discrete_set(mode, {100})
+            _primary=strict_range(primary,range(0,1))
+            _secondary=strict_range(secondary,range(0,1))
+        if _corr == 2 or _corr==3:
+            _mode = strict_discrete_set(mode, {400})
+            _primary=strict_range(primary,range(0,1))
+            _secondary=strict_range(secondary,range(0,1e6))
+
+        self.write("DCORR %d, %d, %d, %d, %d" % (self.channel, _corr,_mode,_primary,_secondary))
+        self.check_errors()
+
+    def perf_corr(self,corr):
+        """This command performs the open, short or load correction data measurement. 'CORR?'
+
+        Before executing this command, set the oscillator level of the MFCMU output
+        signal by using the 'ac_voltage', ACV, command.
+
+        If you use the correction standard, execute the set_corr_val, DCORR, command before this
+        command. The calibration value or the reference value of the standard must be
+        defined before executing this command."""
+        _corr = strict_discrete_set(corr, {1, 2, 3})
+        self.write("CORR? %d, %d" % (self.channel, _corr))
+        self.check_errors()
+
 
 ######################################
 # SMU Setup
@@ -1482,7 +1661,17 @@ class Ranging():
                  'by this SMU').format(index))
         return self._Range(name=name, index=index)
 
+class CMURanging():
+    """ Provides Range Name/Index transformation for MFCMU ranging.
+    Validity of ranges is checked against available ranges
 
+    For now, measurement range defaults to 'limited auto ranging'.
+    """
+
+    def __init__(self, smu_type):
+        supported_ranges= {
+            [0,100,300,1000,3000,10000,30000,100000,300000]
+        }
 class SMUVoltageRanging():
     """ Provides Range Name/Index transformation for voltage
     measurement/sourcing.
@@ -1646,6 +1835,11 @@ class ADCMode(CustomIntEnum):
     MANUAL = 1  #:
     PLC = 2  #:
     TIME = 3  #:
+
+class ADCMode_CMU(CustomIntEnum):
+    """ADC_CMU Mode"""
+    AUTO = 0  #:
+    PLC = 2  #:
 
 
 class AutoManual(CustomIntEnum):
