@@ -941,7 +941,7 @@ class AgilentB1500(Instrument):
 ######################################
 class CMU():
     # TODO: implement CMU specific class commands
-    """ Provides specific methods for the Cs of the Agilent B1500 mainframe
+    """ Provides specific methods for the CMUs of the Agilent B1500 mainframe
 
         :param parent: Instance of the B1500 mainframe class
         :type parent: :class:`.AgilentB1500`
@@ -953,10 +953,10 @@ class CMU():
         self._b1500 = weakref.proxy(parent)
         channel = strict_discrete_set(channel, range(1, 11))
         self.channel = channel
-        smu_type = strict_discrete_set(
-            smu_type,
-            ['MFCMU'])
-        self.impedance_ranging = CMUImpedanceRanging()
+        # for now only autoranging is implemented since ranging mechanism is quite complicated
+        # and use cases rare
+        # refer to page 241 in programming guide for ranging options
+        self.impedance_ranging = 0
         self.name = name
 
     def write(self, string):
@@ -1001,19 +1001,19 @@ class CMU():
         self.write("CL %d" % self.channel)
 
     @property
-    def SCUU_path(self):
+    def scuu_path(self):
         """ Set input-output path for SCUU
 
         :type: :class:`.SCUUMode`
         """
         response = self.query_learn(81, 'SSP')
         response = int(response)
-        return SCUUMode(response)
+        return SCUU_Path(response)
 
-    @SCUU_path.setter
-    def SCUU_path(self,mode):
+    @scuu_path.setter
+    def scuu_path(self,mode):
         """ Set input-output path for SCUU"""
-        op_mode = SCUU_path.get(mode)
+        op_mode = SCUU_Path.get(mode)
         self.write("SSP %d, %d" % self.channel, op_mode)
         self.check_errors()
 
@@ -1038,8 +1038,7 @@ class CMU():
             Result is returned:
             0 Pass
             1 Fail
-            2 Aborted
-        """
+            2 Aborted        """
         self.write("ADJ? %d" % self.channel)
 
     def osc_frequency(self, freq):
@@ -1050,14 +1049,15 @@ class CMU():
         self.check_errors()
 
     def ac_voltage(self, voltage):
-        """ Set ac-voltage of MFCMU. (``ACV``)
+        """Set ac-voltage of MFCMU. (``ACV``)
         """
         val = voltage
         self.write("ACV %d, %d" % (self.channel, val))
         self.check_errors()
 
     def rst_CLCORR(self,mode):
-        """ This command disables the open/short/load correction function and clears the
+        """
+        This command disables the open/short/load correction function and clears the
         frequency list for the correction data measurement. 'CLCORR'
 
         mode : Command option. Integer expression. 1 or 2.
@@ -1103,7 +1103,8 @@ class CMU():
         self.check_errors()
 
     def perf_corr(self,corr):
-        """This command performs the open, short or load correction data measurement. 'CORR?'
+        """
+        This command performs the open, short or load correction data measurement. 'CORR?'
 
         Before executing this command, set the oscillator level of the MFCMU output
         signal by using the 'ac_voltage', ACV, command.
@@ -1114,6 +1115,86 @@ class CMU():
         _corr = strict_discrete_set(corr, {1, 2, 3})
         self.write("CORR? %d, %d" % (self.channel, _corr))
         self.check_errors()
+
+    def enable_abort(self, abort, post='START'):
+        """
+        This command enables or disables the automatic abort function for the CV sweep
+        measurement (MM18). 'WMDCV' The automatic abort function stops the measurement when
+        one of the following conditions occurs:
+        • NULL loop unbalance condition
+        • IV amplifier saturation condition
+        • Overflow on the AD converter
+        Refer to B1500A programming guide for more detail.
+        """
+        _abort = strict_discrete_set(abort, {1, 2})
+        # need to fix this part, see abort condition SMU
+        _post = strict_discrete_set(post, {1, 2})
+        self.write("WMDCV? %d, %d" % ( _abort, _post ))
+        self.check_errors()
+
+    def staircare_sweep(self, mode, start, stop, step):
+        """
+        This command sets the staircase sweep voltage source used for the CV sweep
+        measurement (MM18). 'WDCV'
+        Specified channel has to be activated before.
+        If SCUU is used, set path before executing measurement(scuu_path).
+        If start and stop is below 25V voltage resolution is 0.001V.
+        If start or stop is above 25V voltage resolution is 0.005V.
+        """
+        _mode = strict_discrete_set (mode, {1, 2, 3, 4})
+        _step = strict_discrete_range(step, [1, 1002], 1)
+        if abs(stop) < 25.001:
+            _start = strict_discrete_range(start, [0,25.001], 0.001)
+            _stop = strict_discrete_range(stop, [0,25.001], 0.001)
+            if (_start - _stop)/_step < 0.001:
+                raise ValueError('Stepsize must be bigger than 0.001V')
+
+        else:
+            _start = strict_discrete_range(start, [0,100.005], 0.005)
+            _stop = strict_discrete_range(stop, [0,100.005], 0.005)
+            if (_start - _stop)/_step <0.005:
+                raise ValueError('Stepsize must be bigger than 0.005V for voltage above 25V')
+
+        if mode in (2,4):
+            if (_start * _stop) < 0:
+                raise ValueError('start and stop must have the same polarity for log sweep.')
+
+        self.write("WDCV  %d, %d, %d, %d, %d" % (self.channel, _mode, _start, _stop, _step))
+        self.check_errors()
+
+    def hold_delay(self, hold=0, delay=0, Sdelay=0, Tdelay=0, Mdelay=0):
+        """
+        This command sets the hold time, delay time, and step delay time for the CV sweep
+        measurement (MM18). 'WTDCV'
+        :param hold: Hold time (in seconds) that is the wait time after starting measurement
+        and before starting delay time for the first step. Time resolution: 10ms.
+        :param delay: Delay time (in seconds) that is the wait time after starting to force a step
+        output and before starting a step measurement. Time resolution: 0.1ms.
+        :param Sdelay: Step delay time (in seconds) that is the wait time after starting a step
+        measurement and before starting to force the next step output. Time resolution: 0.1ms.
+        :param Tdelay: Step source trigger delay time (in seconds) that is the wait time after
+        completing a step output setup and before sending a step output setup
+        completion trigger. Time resolution: 0.1ms.
+        :param Mdelay: Step measurement trigger delay time (in seconds) that is the wait time
+        after receiving a start step measurement trigger and before starting a
+        step measurement. Time resolution: 0.1ms.
+
+        :return: None
+        """
+        _hold = strict_discrete_range(hold, [0, 655.36], 0.01)
+        _delay = strict_discrete_range(delay, [0, 655.536], 0.0001)
+        _Sdelay = strict_discrete_range(Sdelay, [0, 1], 0.0001)
+        _Tdelay = strict_discrete_range(Tdelay, [0, _delay+0.0001], 0.0001)
+        _Mdelay = strict_discrete_range(Mdelay, [0, 655.536], 0.0001)
+        self.write("WTDCV  %d, %d, %d, %d, %d" % (_hold, _delay, _Sdelay, _Tdelay, _Mdelay))
+        self.check_errors()
+
+
+
+
+
+
+
 
 
 ######################################
@@ -1668,10 +1749,7 @@ class CMURanging():
     For now, measurement range defaults to 'limited auto ranging'.
     """
 
-    def __init__(self, smu_type):
-        supported_ranges= {
-            [0,100,300,1000,3000,10000,30000,100000,300000]
-        }
+
 class SMUVoltageRanging():
     """ Provides Range Name/Index transformation for voltage
     measurement/sourcing.
@@ -1720,6 +1798,7 @@ class SMUVoltageRanging():
         self.output = Ranging(supported_ranges, ranges)
         self.meas = Ranging(supported_ranges, ranges,
                             fixed_ranges=True)
+
 
 
 class SMUCurrentRanging():
