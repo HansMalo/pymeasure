@@ -1,0 +1,59 @@
+#! python3
+"""	Class to control cascade
+    microtech prober station"""
+
+import pyvisa
+
+
+class PA200:
+    END_ERROR = "703: End of wafer -- StepNextDie"
+    FENCE_ERROR = "75: Software fence error -- StepNextDie"
+
+    """ Prober class with direct GPIB
+        commands for navigating wafer """
+    def __init__(self, dev_address, timeout=3000):
+        rm = pyvisa.ResourceManager()
+        self.device = rm.open_resource(dev_address)
+        self.device.read_termination = '\n'
+        self.device.write_termination = '\n'
+        self.device.timeout = timeout
+
+        # case sensitive commands !!!
+        print(self.device.query("*IDN?"))
+
+    def __del__(self):
+        self.device.close()
+
+    def cur_position(self):
+        """ Return current position in absolute values """
+        return self.send("ReadChuckPosition Y Z")
+
+    def step_next(self):
+        """ Go to the next die """
+        return self.send("StepNextDie")
+
+    def start_probing(self):
+        """ Go to the first die """
+        return self.send("StepFirstDie")
+
+    def go_load(self):
+        return self.send("MoveChuckLoad 0")
+
+    def con_position(self):
+        return self.send("MoveChuckContact 100")
+
+    def total_dies(self):
+        return self.send("GetNumSelectedDies")[3:]
+
+    def cur_die_number(self):
+        return self.send("GetDieDataAsNum").split(" ")[1]
+
+    def get_sub_die_info(self):
+        return self.send("GetDieInfo").split(" ")[1]
+
+    def send(self, command):
+        ans = self.device.query(command)
+        if ans[:2] != "0:":
+            raise Exception("Prober Error: " + ans[2:])
+
+        return ans
