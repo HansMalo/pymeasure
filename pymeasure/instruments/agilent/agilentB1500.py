@@ -56,7 +56,9 @@ class AgilentB1500(Instrument):
             **kwargs
         )
         self._smu_names = {}
+        self._cmu_names = {}
         self._smu_references = {}
+        self._cmu_references = {}
 
     @property
     def smu_references(self):
@@ -113,7 +115,8 @@ class AgilentB1500(Instrument):
             'B1511B': 'MPSMU',
             'B1510A': 'HPSMU',
             'B1514A': 'MCSMU',
-            'B1520A': 'MFCMU'
+            'B1520A': 'MFCMU',
+            'B1520A/N1301A' : 'MFCMU/SCUU'
         }
         out = {}
         for i, module in enumerate(modules):
@@ -150,6 +153,27 @@ class AgilentB1500(Instrument):
         self._smu_references[channel] = smu_reference
         return smu_reference
 
+    def initialize_cmu(self, channel, name):
+        """ Initializes CMU instance by calling :class:`.CMU`.
+
+        :param channel: CMU channel
+        :type channel: int
+        :param name: CMU name for pymeasure (data output etc.)
+        :type name: str
+        :return: CMU instance
+        :rtype: :class:`.CMU`
+        """
+        if channel in (
+                list(range(101, 1101, 100))
+                + list(range(102, 1102, 100))):
+            channel = int(str(channel)[0:-2])
+            # subchannels not relevant for SMU/CMU
+        channel = strict_discrete_set(channel, range(1, 11))
+        self._cmu_names[channel] = name
+        cmu_reference = CMU(self, channel, name)
+        self._cmu_references[channel] = cmu_reference
+        return cmu_reference
+
     def initialize_all_smus(self):
         """ Initialize all SMUs by querying available modules and creating
         a SMU class instance for each.
@@ -162,6 +186,11 @@ class AgilentB1500(Instrument):
                 setattr(self, 'smu' + str(i),
                         self.initialize_smu(
                             channel, smu_type, 'SMU' + str(i)))
+                i += 1
+            if 'CMU' in smu_type:
+                setattr(self, 'cmu' + str(i),
+                        self.initialize_cmu(
+                            channel, 'CMU' + str(i)))
                 i += 1
 
     def pause(self, pause_seconds):
@@ -591,9 +620,14 @@ class AgilentB1500(Instrument):
         """
         mode = MeasMode.get(mode)
         cmd = "MM %d" % mode.value
-        for smu in args:
-            if isinstance(smu, SMU):
-                cmd += ", %d" % smu.channel
+        if mode.value in (17,18):
+            for smu in args:
+                if isinstance(smu, (SMU,CMU)):
+                    cmd += ", %d" % smu.channel
+        else:
+            for smu in args:
+                if isinstance(smu, (SMU,CMU)):
+                    cmd += ", %d" % smu.channel
         self.write(cmd)
         self.check_errors()
 
@@ -888,6 +922,7 @@ class AgilentB1500(Instrument):
         data = np.array(data)
         data = np.split(data, number_of_points)
         data = pd.DataFrame(data=data)
+        # TODO: code breaks at this point for c-v measurement
         data = data.applymap(self._data_format.format_single)
         heads = data.iloc[[0]].applymap(lambda x: ' '.join(x[1:3]))
         # channel & data_type
@@ -948,7 +983,7 @@ class CMU():
         :param int channel: Channel number of the CMU
         :param str name: Name of the CMU
         """
-    def __init__(self, parent, channel, smu_type, name, **kwargs):
+    def __init__(self, parent, channel, name, **kwargs):
         # to allow garbage collection for cyclic references
         self._b1500 = weakref.proxy(parent)
         channel = strict_discrete_set(channel, range(1, 11))
@@ -972,6 +1007,7 @@ class CMU():
     def query_learn(self, query_type, command):
         """Wraps :meth:`~.AgilentB1500.query_learn` method of B1500.
         """
+        # TODO: implement in query_learn
         response = self._b1500.query_learn(query_type)
         # query_learn returns settings of all smus
         # pick setting for this smu only
@@ -1132,7 +1168,7 @@ class CMU():
         self.write("WMDCV? %d, %d" % ( _abort, _post ))
         self.check_errors()
 
-    def staircare_sweep(self, mode, start, stop, step):
+    def staircase_sweep(self, mode, start, stop, step):
         """
         This command sets the staircase sweep voltage source used for the CV sweep
         measurement (MM18). 'WDCV'
@@ -1146,7 +1182,7 @@ class CMU():
         if abs(stop) < 25.001:
             _start = strict_discrete_range(start, [0,25.001], 0.001)
             _stop = strict_discrete_range(stop, [0,25.001], 0.001)
-            if (_start - _stop)/_step < 0.001:
+            if abs((_start - _stop))/_step < 0.001:
                 raise ValueError('Stepsize must be bigger than 0.001V')
 
         else:
